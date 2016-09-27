@@ -1,0 +1,120 @@
+#!/usr/bin/perl
+
+use warnings;
+use strict;
+umask(077);
+
+my $country = "US";
+my $state = "Illinois";
+my $city = "Chicago";
+my $company = "University of Illinois at Chicago";
+my $department = "Academic Computing and Communications Center";
+my $server = undef;
+my $contactemail = "nowhere\@uic.edu";
+my $password = "";
+my $optional_company_name = "";
+my $move = undef;
+my $email = undef;
+
+use Getopt::Long;
+use File::Copy;
+GetOptions("server=s"=>\$server,"move"=>\$move,"email=s"=>\$email);
+
+sub print_usage {
+  print "Usage: new-csr -server servername[,servername] [-move] [-email contactemail]\n";
+  print "  servername: fully qualified domain name (example: foo.uic.edu[,bar.uic.edu,baz.uic.edu])\n";
+  print "  contactemail: email address to serve as contact (example: nowhere\@uic.edu)\n";
+  exit 1;
+}
+
+if( ! defined $server ) {
+  print_usage();
+}
+
+if($email) {
+  unless($email =~ /^\w+\@uic.edu$/) {
+    print_usage();
+  }
+}
+
+my $fqdn = $server;
+
+if( $server =~ /,/) {
+  my @domains = split(',',$server);
+  my $primary = $domains[0];
+  my $san = join(',DNS:',@domains);
+
+  my $opensslconf = `cat /etc/pki/tls/openssl.cnf`;
+  my $random_number = rand(1000);
+  open(my $fh, '>', "/tmp/openssl-$random_number.conf");
+  print $fh $opensslconf;
+  print $fh "[SAN]\n";
+  print $fh "subjectAltName=DNS:$san\n";
+  close $fh;
+
+  my $command = "openssl req -nodes -newkey rsa:2048 -keyout $primary.key ";
+  $command .= "-subj '" . "/C=$country/ST=$state/L=$city/O=$company/OU=$department/CN=$primary/";
+  $command .= "emailAddress=$contactemail' -reqexts SAN -config /tmp/openssl-$random_number.conf";
+  $command .= " -out $primary.csr";
+
+  system($command);
+  $server = $primary;
+
+} else {
+  open (COMMAND, "|", /usr/bin/openssl req -nodes -newkey rsa:2048 -keyout $server.key -out $server.csr");
+
+  print COMMAND "$country\n";
+  print COMMAND "$state\n";
+  print COMMAND "$city\n";
+  print COMMAND "$company\n";
+  print COMMAND "$department\n";
+  print COMMAND "$server\n";
+  print COMMAND "$contactemail\n";
+  print COMMAND "$password\n";
+  print COMMAND "$optional_company_name\n";
+}
+close COMMAND;
+
+print "\n\n";
+
+if($email) {
+  if( -e "$server.csr") {
+
+    open (MAIL, "|", /usr/sbin/sendmail -t");
+
+    my $from = `logname`;
+    $from =~ s/\n/\@uic.edu/;
+    print MAIL "To: certmgr\@uic.edu\n";
+    print MAIL "From: $from\n";
+    print MAIL "Subject: SSL certificate request: $fqdn\n\n";
+    print MAIL "FQDN: $fqdn\n";
+    print MAIL "Term: 3 years\n";
+    print MAIL "Webserver: Apache\n";
+    print MAIL "Contact: $email\n";
+    print MAIL "CSR:\n\n";
+    print MAIL `cat $server.csr`;
+    print MAIL "\n\nThank you,\n\n";
+    print MAIL "$from\n";
+
+    close(MAIL);
+    print "Email Sent Successfully\n";
+
+
+  } else {
+    print "CSR file doesn't exist.\n";
+  }
+}
+
+if($move) {
+  if( -e "/etc/pki/tls/private/$server.key") {
+    print "Existing key found, will not overwrite.\n";
+  } else {
+    print "No existing key, moving $server.key to /etc/pki/tls/private/\n";
+    my $mv = move( "$server.key", "/etc/pki/tls/private/$server.key");
+    if ($mv == 0) {
+      print "ERROR: $!\n";
+    }
+  }
+}
+
+exit 0;
